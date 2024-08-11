@@ -5,6 +5,7 @@
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
+import scipy.io
 
 import os
 import pickle as pkl
@@ -197,7 +198,17 @@ def load_dense(file_path, is_cell_by_gene=True, has_gene_name=True, has_cell_nam
 
     kwargs = {'index_col': 0, 'sep': None} if kwargs is None else kwargs
 
-    X = pd.read_csv(file_path, **kwargs)
+    # X = pd.read_csv(file_path, **kwargs) if file_path[-4:]=='.csv' else pd.DataFrame(scipy.io.mmread(file_path))
+
+    if file_path[-4:] == '.csv':
+        X = pd.read_csv(file_path, **kwargs)
+    else:
+        matrix = scipy.io.mmread(file_path)
+        # Convert to a dense NumPy array
+        dense_matrix = matrix.toarray().astype(float)
+        # Convert the dense array to a DataFrame
+        X = pd.DataFrame(dense_matrix)
+
     expr = X.to_numpy().astype(dtype)
     
     # Get cell and gene names if present, otherwise use an array of 0's as placeholder

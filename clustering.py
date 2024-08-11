@@ -9,6 +9,7 @@ from igraph import * # ignore the squiggly underline, not an error
 
 import util
 import info_log
+from trajectoryInference import cluster_dist, trajectory_inference
 
 def clustering_handler(edgeList, args, param, metrics):
     info_log.print('--------> Start Clustering ...')
@@ -23,6 +24,8 @@ def clustering_handler(edgeList, args, param, metrics):
     clustering_method = args.clustering_method
     avg_factor = 0.95
 
+    # extracting clustering_embed : Choose from {'feature', 'graph', 'both'} here we cluster the cells ....
+    # default : graph embed
     if clustering_embed == 'graph':
         embed = param['graph_embed']
     elif clustering_embed == 'feature':
@@ -33,10 +36,12 @@ def clustering_handler(edgeList, args, param, metrics):
     else:
         info_log.print('--------> clustering_embed argument not recognized, using graph embed ...')
         embed = param['graph_embed']
+
     
     param['clustering_embed'] = embed
 
-    listResult, size = generateLouvainCluster(edgeList)  # edgeList = (cell_i, cell_a), (cell_i, cell_b), ...
+    listResult, size, hdict_ = generateLouvainCluster(edgeList)  # edgeList = (cell_i, cell_a), (cell_i, cell_b), ...
+    # listResult is list of labels of 124 cells respectively
     k_Louvain = len(np.unique(listResult))
     info_log.print(f'----------------> Louvain clusters count: {k_Louvain}')
 
@@ -77,13 +82,17 @@ def generateLouvainCluster(edgeList):
     Gtmp.add_weighted_edges_from(edgeList)
     W = nx.adjacency_matrix(Gtmp)
     W = W.todense()
+    # create graph from weighted adjacency matrix
     graph = Graph.Weighted_Adjacency(
         W.tolist(), mode='undirected', attr="weight", loops=False) # ignore the squiggly underline, not errors
 
     louvain_partition = graph.community_multilevel(
         weights=graph.es['weight'], return_levels=False)
     size = len(louvain_partition)
-    hdict = {}
+
+    # print(f"clustering.py     --> size is {size} and the louvain_partition variable type is {type(louvain_partition)} contains {louvain_partition}")
+
+    hdict = {} #  contains --> cell: cluster number
     count = 0
     for i in range(size):
         tlist = louvain_partition[i]
@@ -94,8 +103,9 @@ def generateLouvainCluster(edgeList):
     listResult = []
     for i in range(count):
         listResult.append(hdict[i])
+    # print("clustering.py ----->  hdict is ----->",hdict, "list result contains --->", listResult)
 
-    return listResult, size
+    return listResult, size, hdict
 
 def convert_adj_to_edge_list(adjacency_matrix):
     """

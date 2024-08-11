@@ -12,6 +12,8 @@ import numpy as np
 
 import info_log
 
+# returns sc data after filtering out top 2000 genes
+# cutoffs deafut are 0.9
 def sc_handler(X_raw, args):
     info_log.print('--------> Preprocessing sc data ...')
 

@@ -18,15 +18,23 @@ import util
 import auto_encoders.model as model
 import info_log
 
+
+import torch_geometric
+from torch_geometric.loader import NeighborLoader
+from torch_geometric.utils import from_scipy_sparse_matrix
+
 def edgeList2edgeIndex(edgeList):
     result=[[i[0],i[1]] for i in edgeList]
     return result
     
-
-def graph_AE_handler(X_embed, CCC_graph, args, param):
+## original graph_AE 
+# def graph_AE_handler(X_embed, CCC_graph, args, param):
     info_log.print('--------> Starting Graph AE ...')
+    info_log.print(f'--------> Layer used --------> {args.graph_AE_use_layer}')
 
     use_GAT = args.graph_AE_use_GAT
+    agg_cls = args.graph_AE_use_aggregator_class
+    use_Graphlayer = args.graph_AE_use_layer
     learning_rate = args.graph_AE_learning_rate
     total_epoch = args.graph_AE_epoch
     embedding_size = args.graph_AE_embedding_size
@@ -51,46 +59,73 @@ def graph_AE_handler(X_embed, CCC_graph, args, param):
         zDiscret = X_embed
 
     adj, adj_train, edgeList = feature2adj(X_embed, graph_construction, neighborhood_factor, retain_weights)
-    adj_norm = gae_util.preprocess_graph(adj_train)
+    adj_norm = gae_util.preprocess_graph(adj_train) # returns normalised torch adj matrix 
     adj_label = (adj_train + sp.eye(adj_train.shape[0])).toarray()
 
     # Prepare matrices
-    if use_GAT:
-        edgeIndex=edgeList2edgeIndex(edgeList)
+    if use_Graphlayer == 'GAT':
+        edgeIndex=edgeList2edgeIndex(edgeList) # list of lists:(node, neighbor)
         edgeIndex=np.array(edgeIndex).T
         CCC_graph_edge_index = torch.from_numpy(edgeIndex).type(torch.LongTensor).to(param['device'])
+    # elif use_Graphlayer == 'GCNConv':
+    #     edgeIndex=edgeList2edgeIndex(edgeList) # list of lists:(node, neighbor)
+    #     edgeIndex=np.array(edgeIndex).T
+    #     CCC_graph_edge_index = torch.from_numpy(edgeIndex).type(torch.LongTensor).to(param['device'])
     else:
-        CCC_graph_edge_index = adj_norm.to(param['device']) 
+        # edgeIndex = edgeList2edgeIndex(edgeList)
+        CCC_graph_edge_index = adj_norm.to(param['device'])  # ccc_graph contains cell vs cell matrix
 
         pos_weight = float(adj_train.shape[0] * adj_train.shape[0] - adj_train.sum()) / adj_train.sum()
         norm = adj_train.shape[0] * adj_train.shape[0] / float((adj_train.shape[0] * adj_train.shape[0] - adj_train.sum()) * 2)
     
     X_embed_normalized = torch.from_numpy(zDiscret).type(torch.FloatTensor).to(param['device'])
     CCC_graph = torch.from_numpy(adj_label).type(torch.FloatTensor).to(param['device'])
-
+    
     graph_AE = model.Graph_AE(X_embed.shape[1],
                               embedding_size, 
                               gat_dropout,
                               args.gat_multi_heads,
-                              args.gat_hid_embed).to(param['device'])
+                              args.graph_AE_layer_num,
+                              args.gat_hid_embed,
+                              agg_cls=args.graph_AE_use_aggregator_class,use_layer=args.graph_AE_use_layer,
+                              ).to(param['device'])
     optimizer = optim.Adam(graph_AE.parameters(), lr=learning_rate)
 
     for epoch in range(total_epoch):
         graph_AE.train()
         optimizer.zero_grad()
 
-        embed, gae_info, recon_graph = graph_AE(X_embed_normalized, CCC_graph_edge_index, use_GAT=use_GAT)
+        embed, gae_info, recon_graph = graph_AE(X_embed_normalized, CCC_graph_edge_index, use_layer=use_Graphlayer)
 
-        if use_GAT:
-            loss = loss_function(preds = recon_graph,
-                                labels = CCC_graph)
-        else:
+        # if use_Graphlayer == 'GAT':
+        #     loss = loss_function(preds = recon_graph,
+        #                         labels = CCC_graph)
+
+        # elif use_Graphlayer == 'GCNConv':
+        #     loss = loss_function(preds = recon_graph,
+        #                         labels = CCC_graph)
+            
+        # elif use_Graphlayer == 'GCN':
+        #     loss = gae_optimizer.loss_function(preds = recon_graph,
+        #                                     labels = CCC_graph,
+        #                                     mu=gae_info[0], logvar=gae_info[1],
+        #                                     n_nodes = X_embed.shape[0],
+        #                                     norm = norm, 
+        #                                     pos_weight = pos_weight)
+        # else :
+        #     loss = loss_function(preds = recon_graph,
+        #                         labels = CCC_graph)
+
+        if use_Graphlayer == 'GCN':
             loss = gae_optimizer.loss_function(preds = recon_graph,
                                             labels = CCC_graph,
                                             mu=gae_info[0], logvar=gae_info[1],
                                             n_nodes = X_embed.shape[0],
                                             norm = norm, 
                                             pos_weight = pos_weight)
+        else:
+            loss = loss_function(preds = recon_graph,
+                                labels = CCC_graph)   
         
         # Backprop and Update
         loss.backward()
@@ -98,8 +133,126 @@ def graph_AE_handler(X_embed, CCC_graph, args, param):
         optimizer.step()
 
         info_log.interval_print(f"----------------> Epoch: {epoch+1}/{total_epoch}, Current loss: {cur_loss:.4f}", epoch=epoch, total_epoch=total_epoch)
-
+    print("graph - ae .py   ccc_graph is -------))))))) ", CCC_graph.shape, CCC_graph)
     return embed.detach().cpu().numpy(), recon_graph.detach().cpu().numpy(), edgeList, adj
+
+
+
+
+def edgeList2edgeIndex(edgeList):
+    result = [[i[0], i[1]] for i in edgeList]
+    return result
+
+
+# updated graph_AE with neighbor sampling
+
+def graph_AE_handler(X_embed, CCC_graph, args, param):
+    info_log.print('--------> Starting Graph AE ...')
+    info_log.print(f'--------> Layer used --------> {args.graph_AE_use_layer}')
+
+    use_GAT = args.graph_AE_use_GAT
+    agg_cls = args.graph_AE_use_aggregator_class
+    use_Graphlayer = args.graph_AE_use_layer
+    learning_rate = args.graph_AE_learning_rate
+    total_epoch = args.graph_AE_epoch
+    embedding_size = args.graph_AE_embedding_size
+    concat_prev_embed = args.graph_AE_concat_prev_embed
+    normalize_embed = args.graph_AE_normalize_embed
+    gat_dropout = args.graph_AE_GAT_dropout
+    graph_construction = args.graph_AE_graph_construction
+    neighborhood_factor = args.graph_AE_neighborhood_factor
+    retain_weights = args.graph_AE_retain_weights
+    neighbor_samples = args.graph_AE_neighborhood_samples  # Number of neighbors to sample
+    num_nodes = args.graph_AE_neighbor_hops
+
+    if concat_prev_embed and param['epoch_num'] > 0:
+        graph_embed = param['graph_embed']
+        graph_embed_norm = util.normalizer(graph_embed, base=X_embed, axis=0)
+        X_embed = np.concatenate((X_embed, graph_embed_norm), axis=1)
+
+    if normalize_embed == 'sum1':
+        zDiscret = normalize_features_dense(X_embed)
+    elif normalize_embed == 'binary':
+        zDiscret = 1.0 * (X_embed > np.mean(X_embed, axis=0))
+    else:
+        zDiscret = X_embed
+
+    adj, adj_train, edgeList = feature2adj(X_embed, graph_construction, neighborhood_factor, retain_weights)
+    adj_norm = gae_util.preprocess_graph(adj_train)  # returns normalized torch adj matrix
+    adj_label = (adj_train + sp.eye(adj_train.shape[0])).toarray()
+
+    if use_Graphlayer == 'SAGE':
+        edge_index = edgeList2edgeIndex(edgeList)  # list of lists:(node, neighbor)
+        edge_index = np.array(edge_index).T
+        CCC_graph_edge_index = torch.from_numpy(edge_index).type(torch.LongTensor).to(param['device'])
+        
+        # Create a PyG dataset for NeighborLoader
+        edge_index = torch.from_numpy(edge_index).to(param['device'])
+        data = torch_geometric.data.Data(edge_index=edge_index)
+
+        # Create a NeighborLoader
+        loader = NeighborLoader(
+            data,
+            num_neighbors=[neighbor_samples] * num_nodes,
+            batch_size=128,
+            shuffle=True
+        )
+
+    else:
+        # Use the adjacency matrix directly
+        CCC_graph_edge_index = adj_norm.to(param['device'])  # CCC_graph contains cell vs cell matrix
+
+        pos_weight = float(adj_train.shape[0] * adj_train.shape[0] - adj_train.sum()) / adj_train.sum()
+        norm = adj_train.shape[0] * adj_train.shape[0] / float((adj_train.shape[0] * adj_train.shape[0] - adj_train.sum()) * 2)
+
+    X_embed_normalized = torch.from_numpy(zDiscret).type(torch.FloatTensor).to(param['device'])
+    CCC_graph = torch.from_numpy(adj_label).type(torch.FloatTensor).to(param['device'])
+
+    graph_AE = model.Graph_AE(X_embed.shape[1],
+                              embedding_size,
+                              gat_dropout,
+                              args.gat_multi_heads,
+                              args.graph_AE_layer_num,
+                              args.gat_hid_embed,
+                              agg_cls=args.graph_AE_use_aggregator_class, use_layer=args.graph_AE_use_layer,
+                              ).to(param['device'])
+    optimizer = optim.Adam(graph_AE.parameters(), lr=learning_rate)
+
+    for epoch in range(total_epoch):
+        graph_AE.train()
+        optimizer.zero_grad()
+
+        if use_Graphlayer == 'SAGE':
+            for idx,batch in enumerate(loader):
+                print("batch is --->>>>>>",batch)
+                batch.edge_index = batch.edge_index.to(param['device'])
+                embed, gae_info, recon_graph = graph_AE(X_embed_normalized, batch.edge_index, use_layer=use_Graphlayer)
+        else:
+            embed, gae_info, recon_graph = graph_AE(X_embed_normalized, CCC_graph_edge_index, use_layer=use_Graphlayer)
+
+        if use_Graphlayer == 'GCN':
+            loss = gae_optimizer.loss_function(preds=recon_graph,
+                                            labels=CCC_graph,
+                                            mu=gae_info[0], logvar=gae_info[1],
+                                            n_nodes=X_embed.shape[0],
+                                            norm=norm,
+                                            pos_weight=pos_weight)
+        else:
+            loss = loss_function(preds=recon_graph,
+                                labels=CCC_graph)
+
+        # Backprop and Update
+        loss.backward()
+        cur_loss = loss.item()
+        optimizer.step()
+
+        info_log.interval_print(f"----------------> Epoch: {epoch+1}/{total_epoch}, Current loss: {cur_loss:.4f}", epoch=epoch, total_epoch=total_epoch)
+    return embed.detach().cpu().numpy(), recon_graph.detach().cpu().numpy(), edgeList, adj
+
+
+
+
+
 
 def loss_function(preds, labels):
     return F.binary_cross_entropy_with_logits(preds, labels)
@@ -135,20 +288,21 @@ def feature2adj(X_embed, graph_construction, neighborhood_factor, retain_weights
     neighborhood_size_temp = neighborhood_factor if neighborhood_factor > 1 else round(X_embed.shape[0] * neighborhood_factor)
     neighborhood_size = neighborhood_size_temp - 1 if neighborhood_size_temp == X_embed.shape[0] else neighborhood_size_temp
 
+    # returns edge list after computing eucledian distance- edgeList contains node i and its all k nearest nodes acc. to eucledian dist and their weights
     if graph_construction == 'v0':
-        edgeList = v0_calculateKNNgraphDistanceMatrixStatsSingleThread(X_embed)
+        edgeList = v0_calculateKNNgraphDistanceMatrixStatsSingleThread(X_embed) 
     elif graph_construction == 'v1':
         edgeList = v1_calculateKNNgraphDistanceMatrixStatsSingleThread(X_embed, k=neighborhood_size)
     elif graph_construction == 'v2':
-        edgeList = v2_calculateKNNgraphDistanceMatrixStatsSingleThread(X_embed, k=neighborhood_size)
+        edgeList = v2_calculateKNNgraphDistanceMatrixStatsSingleThread(X_embed, k=neighborhood_size) # computes eucledian dist b/w each data point i with rest of the feature matrix and stires the closest k+1 data points including itself. Computes the edge weight(inverse of dist from)) and returns the edgeList: (node, neighbr connected node, weight) K=10 and weight is 1/dist of that node
     
     if retain_weights:
         G = nx.DiGraph()
         G.add_weighted_edges_from(edgeList)
         adj_return = nx.adjacency_matrix(G)
     else:
-        graphdict = edgeList2edgeDict(edgeList, X_embed.shape[0])
-        adj_return = nx.adjacency_matrix(nx.from_dict_of_lists(graphdict))
+        graphdict = edgeList2edgeDict(edgeList, X_embed.shape[0]) # returns dict with keys as nodes and values ad corresponding onnected nodes 
+        adj_return = nx.adjacency_matrix(nx.from_dict_of_lists(graphdict)) # return adj matrix
 
     adj = adj_return.copy()
     # adj_orig = adj
@@ -292,4 +446,4 @@ def edgeList2edgeDict(edgeList, nodesize):
         if i not in tdict:
             graphdict[i]=[]
 
-    return graphdict
+    return graphdict 

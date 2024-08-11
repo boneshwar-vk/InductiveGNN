@@ -62,6 +62,11 @@ parser.add_argument('--preprocess_gene_cutoff', type=float, default=0.9,
 parser.add_argument('--preprocess_top_gene_select', type=int, default=2000, 
                     help='Not needed if using benchmark')
 
+# Graph Refinement related
+parser.add_argument('--graph_refinement',type=bool, default=False,help='Boolean for refining the graph edges')
+parser.add_argument('--graph_refinement_lambda',type=float, default=0.5,help='Lambda parameter for refining the graph')
+parser.add_argument('--graph_refinement_threshold',type=float, default=0.5,help='Lambda parameter for refining the graph')
+
 # Feature AE related
 parser.add_argument('--feature_AE_epoch', nargs=2, type=int, default=[500, 300], 
                     help='(two integers separated by a space, default 500 200) First number being non-EM epochs, second number being EM epochs')
@@ -76,19 +81,31 @@ parser.add_argument('--feature_AE_dropout_prob', type=float, default=0,
 parser.add_argument('--feature_AE_concat_prev_embed', type=str, default=None, 
                     help="(str, default None) Choose from {'feature', 'graph'}")               
 
-# Graph AE related
-parser.add_argument('--graph_AE_epoch', type=int, default=200,
-                    help='(int, default 200) The epoch or graph autoencoder')
-parser.add_argument('--graph_AE_use_GAT', action='store_true', default=False, 
-                    help='(boolean, default False) If true, will use GAT for GAE layers; otherwise will use GCN layers')
+# Graph AE layers related
+
+parser.add_argument('--graph_AE_use_layer',type=str, default='GCN',help='Layer to be used inside Graph Autoencoder choose from (gcn, sage, gat, pgnn)')
+parser.add_argument('--graph_AE_use_aggregator_class',type=str, default='mean',help='Agg Class for SAGEConv layers. Choose from (mean, lstm, max)')
+parser.add_argument('--graph_AE_layer_num',type=int, default=2,help='Number of layers in the model')
+parser.add_argument('--graph_AE_neighbor_hops',type=int, default=2,help='Number of hops to be performed per node')
+parser.add_argument('--graph_AE_neighborhood_samples',type=int, default=20, help='Number of nodes to be sampled per layer')
+parser.add_argument('--graph_AE_hidden_layer_dims',type=int, default=2,help='Number of layers in the model')
 parser.add_argument('--graph_AE_GAT_dropout', type=float, default=0,
                     help='(int, default 0) The dropout probability for GAT')
 parser.add_argument('--graph_AE_learning_rate', type=float, default=1e-2, 
                     help='(float, default 1e-2) Learning rate')
+parser.add_argument('--graph_AE_GCN2Conv_alpha', type=float, default=0.3, 
+                    help='(float, default 1e-2) alpha parameter')
+parser.add_argument('--graph_AE_GCN2Conv_lambda', type=float, default=0.7, 
+                    help='(float, default 1e-2) lambda parameter')
+
+# general Graph AE based
+parser.add_argument('--graph_AE_epoch', type=int, default=200,
+                    help='(int, default 200) The epoch or graph autoencoder')
+parser.add_argument('--graph_AE_use_GAT', action='store_true', default=False, 
+                    help='(boolean, default False) If true, will use GAT for GAE layers; otherwise will use GCN layers')
 parser.add_argument('--graph_AE_embedding_size', type=int, default=16, 
                     help='(int, default 16) Graphh AE embedding size')
-parser.add_argument('--graph_AE_concat_prev_embed', action='store_true', default=False, 
-                    help='(boolean, default False) If true, will concat GAE embed at t-1 with the inputed Feature AE embed at t for graph construction; else will construct graph using Feature AE embed only')
+parser.add_argument('--graph_AE_concat_prev_embed', action='store_true', default=False, help='(boolean, default False) If true, will concat GAE embed at t-1 with the inputed Feature AE embed at t for graph construction; else will construct graph using Feature AE embed only')
 parser.add_argument('--graph_AE_normalize_embed', type=str, default=None, 
                     help="(str, default None) Choose from {None, 'sum1', 'binary'}")
 parser.add_argument('--graph_AE_graph_construction', type=str, default='v2', 
@@ -99,12 +116,13 @@ parser.add_argument('--graph_AE_retain_weights', action='store_true', default=Fa
                     help='(boolean, default False)')
 parser.add_argument('--gat_multi_heads', type=int, default=2, 
                     help='(int, default 2)')                   
-parser.add_argument('--gat_hid_embed', type=int, default=64, 
+parser.add_argument('--gat_hid_embed', type=int, default=16, 
                     help='(int, default 64) The dim for hid_embed')   
 
 # Clustering related
 parser.add_argument('--clustering_louvain_only', action='store_true', default=False, 
                     help='(boolean, default False) If true, will use Louvain clustering only; otherwise, first use Louvain to determine clusters count (k), then perform KMeans.')
+
 parser.add_argument('--clustering_use_flexible_k', action='store_true', default=False, 
                     help='(boolean, default False) If true, will determin k using Louvain every epoch; otherwise, will rely on the k in the first epoch')
 parser.add_argument('--clustering_embed', type=str, default='graph', 
@@ -216,6 +234,8 @@ info_log.print('\n> Preprocessing data ...')
 X_sc = preprocess.sc_handler(X_sc_raw, args)
 X_bulk = preprocess.bulk_handler(X_bulk_raw, gene_filter=X_sc['gene'])['expr'] if args.use_bulk else None
 
+# Till this point we have pre-processed scRNA data with gene cutoff cells/rows removed and finally log transformed...
+
 info_log.print('\n> Setting up data for testing ...')
 x_dropout, dropout_info = benchmark_util.dropout(X_sc, args)
 ct_labels_truth = load.cell_type_labels(args, cell_filter=X_sc['cell']) if args.given_cell_type_labels else None
@@ -243,7 +263,6 @@ X_process = x_dropout.copy()
 X_embed, X_feature_recon, model_state = feature_AE_handler(X_process, TRS, args, param)
 
 graph_embed, CCC_graph_hat, edgeList, adj = graph_AE_handler(X_embed, CCC_graph, args, param)
-
 info_log.print('\n> Entering main loop ...')
 metrics = result.Performance_Metrics(X_sc, X_process, X_feature_recon, edgeList, ct_labels_truth, dropout_info, graph_embed, X_embed, args, param)
 for i in range(args.total_epoch):
@@ -252,7 +271,11 @@ for i in range(args.total_epoch):
     param['feature_embed'] = X_embed
     param['graph_embed'] = graph_embed
 
-    cluster_labels, cluster_lists_of_idx = clustering_handler(edgeList, args, param, metrics)
+    # before clustering handler, the param contains : dict_keys(['device', 'dataloader_kwargs', 'tik', 'epoch_num', 'total_epoch', 'n_feature_orig', 'x_dropout', 'feature_embed', 'graph_embed']) first iteration......
+
+    cluster_labels, cluster_lists_of_idx = clustering_handler(edgeList, args, param, metrics) 
+
+    # ater this point, the para contains dict_keys(['device', 'dataloader_kwargs', 'tik', 'epoch_num', 'total_epoch', 'n_feature_orig', 'x_dropout', 'feature_embed', 'graph_embed', 'clustering_embed', 'k_float', 'impute_regu']) impute reg comes after first iteration......
 
     param['impute_regu'] = util.graph_celltype_regu_handler(adj, cluster_labels)
     X_imputed_sc = cluster_AE_handler(X_feature_recon, TRS, cluster_lists_of_idx, args, param, model_state)
@@ -272,6 +295,7 @@ for i in range(args.total_epoch):
     # Evaluate performance metrics
     metrics.update(cluster_labels, X_imputed_sc, X_feature_recon, edgeList, graph_embed, X_embed, param)
     info_log.print(f"==========> Epoch {param['epoch_num']}: {metrics.latest_results()} <==========")
+
 
     if metrics.stopping_checks():
         info_log.print(f'\n> Converged! Early stopping')
