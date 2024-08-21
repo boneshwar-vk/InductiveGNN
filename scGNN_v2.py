@@ -82,12 +82,10 @@ parser.add_argument('--feature_AE_concat_prev_embed', type=str, default=None,
                     help="(str, default None) Choose from {'feature', 'graph'}")               
 
 # Graph AE layers related
-
 parser.add_argument('--graph_AE_use_layer',type=str, default='GCN',help='Layer to be used inside Graph Autoencoder choose from (gcn, sage, gat, pgnn)')
-parser.add_argument('--graph_AE_use_aggregator_class',type=str, default='mean',help='Agg Class for SAGEConv layers. Choose from (mean, lstm, max)')
+parser.add_argument('--graph_AE_hid_embed', type=int, default=16, 
+                    help='(int, default 64) The dim for hid_embed') 
 parser.add_argument('--graph_AE_layer_num',type=int, default=2,help='Number of layers in the model')
-parser.add_argument('--graph_AE_neighbor_hops',type=int, default=2,help='Number of hops to be performed per node')
-parser.add_argument('--graph_AE_neighborhood_samples',type=int, default=20, help='Number of nodes to be sampled per layer')
 parser.add_argument('--graph_AE_hidden_layer_dims',type=int, default=2,help='Number of layers in the model')
 parser.add_argument('--graph_AE_GAT_dropout', type=float, default=0,
                     help='(int, default 0) The dropout probability for GAT')
@@ -97,6 +95,17 @@ parser.add_argument('--graph_AE_GCN2Conv_alpha', type=float, default=0.3,
                     help='(float, default 1e-2) alpha parameter')
 parser.add_argument('--graph_AE_GCN2Conv_lambda', type=float, default=0.7, 
                     help='(float, default 1e-2) lambda parameter')
+parser.add_argument('--graph_AE_SAGE_DataLoader_batch_size', type=int, default=256, help='(int, default 64) The dim for hid_embed') 
+
+# Graph AE GraphSAGE related
+parser.add_argument('--graph_AE_use_aggregator_class',type=str, default='mean',help='Agg Class for SAGEConv layers. Choose from (mean, lstm, max)')
+parser.add_argument('--graph_AE_neighbor_hops',type=int, default=2,help='Number of hops to be performed per node')
+parser.add_argument('--graph_AE_Sampler_node_num',type=int, default=10, help='Number of nodes to be sampled per layer')
+
+
+# Graph AE P-GNN related
+# parser.add_argument('--graph_AE_Sampler_node_num',type=int, default=10, help='Number of nodes to be sampled per layer')
+
 
 # general Graph AE based
 parser.add_argument('--graph_AE_epoch', type=int, default=200,
@@ -116,8 +125,7 @@ parser.add_argument('--graph_AE_retain_weights', action='store_true', default=Fa
                     help='(boolean, default False)')
 parser.add_argument('--gat_multi_heads', type=int, default=2, 
                     help='(int, default 2)')                   
-parser.add_argument('--gat_hid_embed', type=int, default=16, 
-                    help='(int, default 64) The dim for hid_embed')   
+  
 
 # Clustering related
 parser.add_argument('--clustering_louvain_only', action='store_true', default=False, 
@@ -258,12 +266,14 @@ param['total_epoch'] = args.total_epoch
 x_dropout = x_dropout['expr']
 param['n_feature_orig'] = x_dropout.shape[1]
 param['x_dropout'] = x_dropout
-X_process = x_dropout.copy()
+X_process = x_dropout.copy() 
+# Till this point Ground truth and x_embed (124,2000) have been loaded...
 
 X_embed, X_feature_recon, model_state = feature_AE_handler(X_process, TRS, args, param)
 
-graph_embed, CCC_graph_hat, edgeList, adj = graph_AE_handler(X_embed, CCC_graph, args, param)
+graph_embed, CCC_graph_hat, edgeList, adj = graph_AE_handler(X_embed, CCC_graph, args, param) # x_embed is the low dimenional reduction of whole dataset: (124,2000) --> (124,128) (cells,genes) --> (cells,128)
 info_log.print('\n> Entering main loop ...')
+
 metrics = result.Performance_Metrics(X_sc, X_process, X_feature_recon, edgeList, ct_labels_truth, dropout_info, graph_embed, X_embed, args, param)
 for i in range(args.total_epoch):
     info_log.print(f"\n==========> scGNN Epoch {i+1}/{args.total_epoch} <==========")
@@ -288,7 +298,7 @@ for i in range(args.total_epoch):
     
     X_embed, X_feature_recon, model_state = feature_AE_handler(X_imputed, TRS, args, param, model_state)
 
-    graph_embed, CCC_graph_hat, edgeList, adj = graph_AE_handler(X_embed, CCC_graph, args, param)
+    graph_embed, CCC_graph_hat, edgeList, adj = graph_AE_handler(X_embed, CCC_graph, args, param) # x_embed is the low dimenional reduction of whole dataset. (124,2000) --> (124,128)
 
     X_process = X_imputed
 

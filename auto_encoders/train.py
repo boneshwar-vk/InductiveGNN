@@ -27,9 +27,8 @@ def train_handler(model, train_loader, optimizer, TRS, total_epoch, regu_strengt
         train_loss = 0
 
         for batch_idx, (data, dataindex) in enumerate(train_loader): # data is Tensor of shape [batch * gene]
-
-            # Send data and regulation matrix to device
-            data = data.type(torch.FloatTensor).to(param['device'])
+            # Send data and regulation matrix to device  
+            data = data.type(torch.FloatTensor).to(param['device']) # data is (124,2000) or cells,top variable genes
             data_masked = F.dropout(data, p=masked_prob)
             if impute_regu is not None:
                 impute_regu['LTMG_regu'] = TRS[dataindex, :].to(param['device'])
@@ -38,7 +37,7 @@ def train_handler(model, train_loader, optimizer, TRS, total_epoch, regu_strengt
 
             optimizer.zero_grad()
             
-            z, recon_batch = model.forward(data_masked) # reconstructed batch and encoding layer as outputs
+            z, recon_batch = model.forward(data_masked) # reconstructed batch and encoding layer as outputs z- low dim of feature AE
             
             # Calculate loss
             loss = loss_function_graph( 
@@ -67,12 +66,15 @@ def train_handler(model, train_loader, optimizer, TRS, total_epoch, regu_strengt
                 recon_batch_all = recon_batch
                 data_all = data
                 z_all = z
+                z_temp= torch.cat((z_all, z), 0)
+            
             else:
                 recon_batch_all = torch.cat((recon_batch_all, recon_batch), 0)
                 data_all = torch.cat((data_all, data), 0)
                 z_all = torch.cat((z_all, z), 0)
 
         info_log.interval_print(f'----------------> Epoch: {epoch+1}/{total_epoch}, Average loss: {train_loss / len(train_loader.dataset):.4f}', epoch=epoch, total_epoch=total_epoch)
+    print(z_all.shape)
 
     return  data_all, z_all, recon_batch_all
 

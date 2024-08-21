@@ -16,17 +16,23 @@ import auto_encoders.gae.optimizer as gae_optimizer
 
 import util
 import auto_encoders.model as model
+import auto_encoders.model_new as model_new
+import dgl
 import info_log
-
-
-import torch_geometric
-from torch_geometric.loader import NeighborLoader
-from torch_geometric.utils import from_scipy_sparse_matrix
+from dgl.data import AsNodePredDataset # repurposes a dataset for standard semi-supervised transdcutive node prediction task. 
+from dgl.dataloading import (
+    DataLoader,
+    MultiLayerFullNeighborSampler,
+    NeighborSampler,
+)
+# import torch_geometric
+# from torch_geometric.loader import NeighborLoader
+# from torch_geometric.utils import from_scipy_sparse_matrix
 
 def edgeList2edgeIndex(edgeList):
-    result=[[i[0],i[1]] for i in edgeList]
+    result = [[i[0], i[1]] for i in edgeList]
     return result
-    
+
 ## original graph_AE 
 # def graph_AE_handler(X_embed, CCC_graph, args, param):
     info_log.print('--------> Starting Graph AE ...')
@@ -58,7 +64,7 @@ def edgeList2edgeIndex(edgeList):
     else:
         zDiscret = X_embed
 
-    adj, adj_train, edgeList = feature2adj(X_embed, graph_construction, neighborhood_factor, retain_weights)
+    adj, adj_train, edgeList = feature2adj(X_embed, graph_construction, neighborhood_factor, retain_weights) # self loop adj matrix, no self loop adj matrix and edgeList 
     adj_norm = gae_util.preprocess_graph(adj_train) # returns normalised torch adj matrix 
     adj_label = (adj_train + sp.eye(adj_train.shape[0])).toarray()
 
@@ -73,20 +79,19 @@ def edgeList2edgeIndex(edgeList):
     #     CCC_graph_edge_index = torch.from_numpy(edgeIndex).type(torch.LongTensor).to(param['device'])
     else:
         # edgeIndex = edgeList2edgeIndex(edgeList)
-        CCC_graph_edge_index = adj_norm.to(param['device'])  # ccc_graph contains cell vs cell matrix
-
+        CCC_graph_edge_index = adj_norm.to(param['device'])  
         pos_weight = float(adj_train.shape[0] * adj_train.shape[0] - adj_train.sum()) / adj_train.sum()
         norm = adj_train.shape[0] * adj_train.shape[0] / float((adj_train.shape[0] * adj_train.shape[0] - adj_train.sum()) * 2)
     
-    X_embed_normalized = torch.from_numpy(zDiscret).type(torch.FloatTensor).to(param['device'])
-    CCC_graph = torch.from_numpy(adj_label).type(torch.FloatTensor).to(param['device'])
+    X_embed_normalized = torch.from_numpy(zDiscret).type(torch.FloatTensor).to(param['device']) # X_embed contains 124,128 the low dim of Feature AE (whole data reduced to smaller dimnension)
+    CCC_graph = torch.from_numpy(adj_label).type(torch.FloatTensor).to(param['device']) # contains adj matrix with self loops added to the graph
     
     graph_AE = model.Graph_AE(X_embed.shape[1],
                               embedding_size, 
                               gat_dropout,
                               args.gat_multi_heads,
                               args.graph_AE_layer_num,
-                              args.gat_hid_embed,
+                              args.graph_AE_hid_embed,
                               agg_cls=args.graph_AE_use_aggregator_class,use_layer=args.graph_AE_use_layer,
                               ).to(param['device'])
     optimizer = optim.Adam(graph_AE.parameters(), lr=learning_rate)
@@ -133,19 +138,10 @@ def edgeList2edgeIndex(edgeList):
         optimizer.step()
 
         info_log.interval_print(f"----------------> Epoch: {epoch+1}/{total_epoch}, Current loss: {cur_loss:.4f}", epoch=epoch, total_epoch=total_epoch)
-    print("graph - ae .py   ccc_graph is -------))))))) ", CCC_graph.shape, CCC_graph)
     return embed.detach().cpu().numpy(), recon_graph.detach().cpu().numpy(), edgeList, adj
-
-
-
-
-def edgeList2edgeIndex(edgeList):
-    result = [[i[0], i[1]] for i in edgeList]
-    return result
-
+#-------------------------------------------------------------------------------
 
 # updated graph_AE with neighbor sampling
-
 def graph_AE_handler(X_embed, CCC_graph, args, param):
     info_log.print('--------> Starting Graph AE ...')
     info_log.print(f'--------> Layer used --------> {args.graph_AE_use_layer}')
@@ -162,14 +158,13 @@ def graph_AE_handler(X_embed, CCC_graph, args, param):
     graph_construction = args.graph_AE_graph_construction
     neighborhood_factor = args.graph_AE_neighborhood_factor
     retain_weights = args.graph_AE_retain_weights
-    neighbor_samples = args.graph_AE_neighborhood_samples  # Number of neighbors to sample
-    num_nodes = args.graph_AE_neighbor_hops
 
     if concat_prev_embed and param['epoch_num'] > 0:
         graph_embed = param['graph_embed']
         graph_embed_norm = util.normalizer(graph_embed, base=X_embed, axis=0)
         X_embed = np.concatenate((X_embed, graph_embed_norm), axis=1)
 
+    
     if normalize_embed == 'sum1':
         zDiscret = normalize_features_dense(X_embed)
     elif normalize_embed == 'binary':
@@ -177,70 +172,119 @@ def graph_AE_handler(X_embed, CCC_graph, args, param):
     else:
         zDiscret = X_embed
 
-    adj, adj_train, edgeList = feature2adj(X_embed, graph_construction, neighborhood_factor, retain_weights)
-    adj_norm = gae_util.preprocess_graph(adj_train)  # returns normalized torch adj matrix
+    adj, adj_train, edgeList = feature2adj(X_embed, graph_construction, neighborhood_factor, retain_weights) # self loop adj matrix, no self loop adj matrix and edgeList 
+    adj_norm = gae_util.preprocess_graph(adj_train) # returns normalised torch adj matrix 
     adj_label = (adj_train + sp.eye(adj_train.shape[0])).toarray()
 
-    if use_Graphlayer == 'SAGE':
-        edge_index = edgeList2edgeIndex(edgeList)  # list of lists:(node, neighbor)
-        edge_index = np.array(edge_index).T
-        CCC_graph_edge_index = torch.from_numpy(edge_index).type(torch.LongTensor).to(param['device'])
-        
-        # Create a PyG dataset for NeighborLoader
-        edge_index = torch.from_numpy(edge_index).to(param['device'])
-        data = torch_geometric.data.Data(edge_index=edge_index)
+    X_embed_normalized = torch.from_numpy(zDiscret).type(torch.FloatTensor).to(param['device']) # X_embed contains 124,128 the low dim of Feature AE (whole data reduced to smaller dimnension)
+    CCC_graph = torch.from_numpy(adj_label).type(torch.FloatTensor).to(param['device']) # contains adj matrix with self loops added to the graph
 
-        # Create a NeighborLoader
-        loader = NeighborLoader(
-            data,
-            num_neighbors=[neighbor_samples] * num_nodes,
-            batch_size=128,
-            shuffle=True
-        )
-
-    else:
-        # Use the adjacency matrix directly
-        CCC_graph_edge_index = adj_norm.to(param['device'])  # CCC_graph contains cell vs cell matrix
-
-        pos_weight = float(adj_train.shape[0] * adj_train.shape[0] - adj_train.sum()) / adj_train.sum()
-        norm = adj_train.shape[0] * adj_train.shape[0] / float((adj_train.shape[0] * adj_train.shape[0] - adj_train.sum()) * 2)
-
-    X_embed_normalized = torch.from_numpy(zDiscret).type(torch.FloatTensor).to(param['device'])
-    CCC_graph = torch.from_numpy(adj_label).type(torch.FloatTensor).to(param['device'])
-
-    graph_AE = model.Graph_AE(X_embed.shape[1],
-                              embedding_size,
+    # Prepare matrices
+    if use_Graphlayer == 'GAT':
+        edgeIndex=edgeList2edgeIndex(edgeList) # list of lists:(node, neighbor)
+        edgeIndex=np.array(edgeIndex).T
+        CCC_graph_edge_index = torch.from_numpy(edgeIndex).type(torch.LongTensor).to(param['device'])
+        graph_AE = model.Graph_AE(X_embed.shape[1],
+                              embedding_size, 
                               gat_dropout,
                               args.gat_multi_heads,
                               args.graph_AE_layer_num,
-                              args.gat_hid_embed,
-                              agg_cls=args.graph_AE_use_aggregator_class, use_layer=args.graph_AE_use_layer,
+                              args.graph_AE_hid_embed,
+                              use_layer=args.graph_AE_use_layer,
                               ).to(param['device'])
-    optimizer = optim.Adam(graph_AE.parameters(), lr=learning_rate)
+
+    elif use_Graphlayer == 'SAGE':
+
+        CCC_graph_edge_index = adj_norm.to(param['device'])
+        # Create a DGL NeighborLoader & Dataloader
+        start_nodes = torch.tensor([e[0] for e in edgeList])
+        end_nodes = torch.tensor([e[1] for e in edgeList])
+        weights_nodes = torch.tensor([e[2] for e in edgeList])
+
+        # DGL graph created
+        g = dgl.graph((start_nodes,end_nodes))   
+        dgl.add_self_loop(g)
+        g.edata['weight'] = weights_nodes
+        # print(g)
+
+        sampler = dgl.dataloading.NeighborSampler([5, 10, 15])
+        node_ids = g.nodes()
+        dataloader = dgl.dataloading.DataLoader(g, node_ids, sampler, batch_size=128, shuffle=True, drop_last=False, num_workers=4)
+        # for input_nodes, output_nodes, blocks in dataloader:
+        #     print("input nodes",input_nodes, "output nodes",output_nodes, "blocks",blocks)
+        print()
+        # Inductive Graph AE defined
+        graph_AE = model_new.InductiveGraph_AE(
+            input_dim=X_embed.shape[1],
+            hid_embed=args.graph_AE_hid_embed,
+            embedding_size=embedding_size,
+            agg_cls=args.graph_AE_use_aggregator_class,
+            use_layer=args.graph_AE_use_layer,
+            dropout=0,
+            layers = 2,
+        )
+
+    else:
+        # edgeIndex = edgeList2edgeIndex(edgeList)
+        CCC_graph_edge_index = adj_norm.to(param['device'])  
+        pos_weight = float(adj_train.shape[0] * adj_train.shape[0] - adj_train.sum()) / adj_train.sum()
+        norm = adj_train.shape[0] * adj_train.shape[0] / float((adj_train.shape[0] * adj_train.shape[0] - adj_train.sum()) * 2)
+        graph_AE = model.Graph_AE(X_embed.shape[1],
+                            embedding_size, 
+                            gat_dropout,
+                            args.gat_multi_heads,
+                            args.graph_AE_layer_num,
+                            args.graph_AE_hid_embed,
+                            agg_cls=args.graph_AE_use_aggregator_class,use_layer=args.graph_AE_use_layer,
+                            ).to(param['device'])
+
+
+    
+    optimizer = optim.Adam(graph_AE.parameters(), lr=learning_rate, weight_decay=5e-4)
 
     for epoch in range(total_epoch):
         graph_AE.train()
         optimizer.zero_grad()
 
+
         if use_Graphlayer == 'SAGE':
-            for idx,batch in enumerate(loader):
-                print("batch is --->>>>>>",batch)
-                batch.edge_index = batch.edge_index.to(param['device'])
-                embed, gae_info, recon_graph = graph_AE(X_embed_normalized, batch.edge_index, use_layer=use_Graphlayer)
+            embed, gae_info, recon_graph = graph_AE(
+                g,
+                X_embed_normalized
+            )
         else:
             embed, gae_info, recon_graph = graph_AE(X_embed_normalized, CCC_graph_edge_index, use_layer=use_Graphlayer)
 
-        if use_Graphlayer == 'GCN':
-            loss = gae_optimizer.loss_function(preds=recon_graph,
-                                            labels=CCC_graph,
-                                            mu=gae_info[0], logvar=gae_info[1],
-                                            n_nodes=X_embed.shape[0],
-                                            norm=norm,
-                                            pos_weight=pos_weight)
-        else:
-            loss = loss_function(preds=recon_graph,
-                                labels=CCC_graph)
+        # if use_Graphlayer == 'GAT':
+        #     loss = loss_function(preds = recon_graph,
+        #                         labels = CCC_graph)
 
+        # elif use_Graphlayer == 'GCNConv':
+        #     loss = loss_function(preds = recon_graph,
+        #                         labels = CCC_graph)
+            
+        # elif use_Graphlayer == 'GCN':
+        #     loss = gae_optimizer.loss_function(preds = recon_graph,
+        #                                     labels = CCC_graph,
+        #                                     mu=gae_info[0], logvar=gae_info[1],
+        #                                     n_nodes = X_embed.shape[0],
+        #                                     norm = norm, 
+        #                                     pos_weight = pos_weight)
+        # else :
+        #     loss = loss_function(preds = recon_graph,
+        #                         labels = CCC_graph)
+
+        if use_Graphlayer == 'GCN':
+            loss = gae_optimizer.loss_function(preds = recon_graph,
+                                            labels = CCC_graph,
+                                            mu=gae_info[0], logvar=gae_info[1],
+                                            n_nodes = X_embed.shape[0],
+                                            norm = norm, 
+                                            pos_weight = pos_weight)
+        else:
+            loss = loss_function(preds = recon_graph,
+                                labels = CCC_graph)   
+        
         # Backprop and Update
         loss.backward()
         cur_loss = loss.item()
@@ -252,6 +296,72 @@ def graph_AE_handler(X_embed, CCC_graph, args, param):
 
 
 
+
+
+
+
+
+
+
+
+        ## Create a PyG dataset for NeighborLoader
+        # edge_index = torch.from_numpy(edge_index).to(param['device']) 
+        # data = torch_geometric.data.Data(edge_index=edge_index)
+        
+
+        # # dataset = gae_util.DGLDataset(X_embed, CCC_graph, start_nodes, end_nodes, weights_nodes)
+        # # g = dataset[0]
+
+        # # Neighbor Sampler 
+        # sampler = NeighborSampler([num_neighbor_samples]*num_hops,)
+        # total_loader = DataLoader(
+        #     graph=g, 
+        #     indices = torch.arange(g.num_nodes()).to(param['device']),
+        #     graph_sampler = sampler,
+        #     device = param['device'],
+        #     batch_size = args.graph_AE_SAGE_DataLoader_batch_size,
+        #     shuffle= True,
+        #     num_workers = 0,
+        # )
+        # train_loader = DataLoader(
+        #     graph=g, 
+        #     indices = torch.arange(g.num_nodes()).to(param['device']),
+        #     graph_sampler = sampler,
+        #     device = param['device'],
+        #     batch_size = args.graph_AE_SAGE_DataLoader_batch_size,
+        #     shuffle= True,
+        #     num_workers = 0,
+        # )
+        # val_loader = DataLoader(
+        #    graph=g, 
+        #     indices = torch.arange(g.num_nodes()).to(param['device']),
+        #     graph_sampler = sampler,
+        #     device = param['device'],
+        #     batch_size = args.graph_AE_SAGE_DataLoader_batch_size,
+        #     shuffle= True,
+        #     num_workers = 0,
+        # )
+        # test_loader = DataLoader(
+        #     graph=g, 
+        #     indices = torch.arange(g.num_nodes()).to(param['device']),
+        #     graph_sampler = sampler,
+        #     device = param['device'],
+        #     batch_size = args.graph_AE_SAGE_DataLoader_batch_size,
+        #     shuffle= True,
+        #     num_workers = 0,
+        # )
+
+        # print("Train Loader------------->", train_loader)
+
+        # # Loading the since it is inductive bu user choice model
+        # graph_AE = model_new.InductiveGraph_AE(input_dim=X_embed.shape[1],
+        #                         hid_embed=args.graph_AE_hid_embed,
+        #                         embedding_size=embedding_size,
+        #                         layers=args.graph_AE_layer_num,
+        #                         agg_cls=args.graph_AE_use_aggregator_class, use_layer=args.graph_AE_use_layer,
+        #                         dropout=gat_dropout,
+        #                         ).to(param['device'])
+#-------------------------------------------------------------------------------
 
 
 def loss_function(preds, labels):

@@ -1,10 +1,16 @@
 import pickle as pkl
-
 import networkx as nx
 import numpy as np
 import scipy.sparse as sp
 import torch
 from sklearn.metrics import roc_auc_score, average_precision_score
+import os
+import dgl
+import torch
+from dgl.data import DGLDataset
+
+# Set the DGL backend to PyTorch
+os.environ["DGLBACKEND"] = "pytorch"
 
 
 def sample_mask(idx, l):
@@ -225,3 +231,94 @@ def get_roc_score(emb, adj_orig, edges_pos, edges_neg):
     ap_score = average_precision_score(labels_all, preds_all)
 
     return roc_score, ap_score
+
+# Set the DGL backend to PyTorch
+os.environ["DGLBACKEND"] = "pytorch"
+
+import os
+import dgl
+import torch
+from dgl.data import DGLDataset
+
+# Set the DGL backend to PyTorch
+os.environ["DGLBACKEND"] = "pytorch"
+
+class GeneCellDataset(DGLDataset):
+    def __init__(self, X_embed, labels, start_nodes, end_nodes, weights, train_ratio=0.8, val_ratio=0.1):
+        self.X_embed = X_embed
+        self.labels = labels
+        self.start_nodes = start_nodes
+        self.end_nodes = end_nodes
+        self.weights = weights
+        self.train_ratio = train_ratio
+        self.val_ratio = val_ratio
+        super().__init__(name="gene_cell")
+
+    def process(self):
+        # Convert input data to torch tensors if not already
+        if not isinstance(self.X_embed, torch.Tensor):
+            self.X_embed = torch.tensor(self.X_embed, dtype=torch.float32)
+
+        if not all(isinstance(x, torch.Tensor) for x in [self.labels, self.start_nodes, self.end_nodes, self.weights]):
+            self.labels = torch.tensor(self.labels, dtype=torch.long)
+            self.start_nodes = torch.tensor(self.start_nodes, dtype=torch.int64)
+            self.end_nodes = torch.tensor(self.end_nodes, dtype=torch.int64)
+            self.weights = torch.tensor(self.weights, dtype=torch.float32)
+
+        # Create a DGL graph
+        self.graph = dgl.graph((self.start_nodes, self.end_nodes), num_nodes=self.X_embed.shape[0])
+        self.graph.ndata["feat"] = self.X_embed
+        self.graph.ndata["label"] = self.labels
+        self.graph.edata["weight"] = self.weights
+
+        # Calculate number of nodes for each dataset split
+        n_nodes = self.X_embed.shape[0]
+        n_train = int(n_nodes * self.train_ratio)
+        n_val = int(n_nodes * self.val_ratio)
+        n_test = n_nodes - n_train - n_val
+
+        # Generate random indices and shuffle them for split assignment
+        all_indices = torch.randperm(n_nodes)
+        train_idx = all_indices[:n_train]
+        val_idx = all_indices[n_train:n_train + n_val]
+        test_idx = all_indices[n_train + n_val:]
+
+        # Create masks for train, validation, and test sets
+        train_mask = torch.zeros(n_nodes, dtype=torch.bool)
+        val_mask = torch.zeros(n_nodes, dtype=torch.bool)
+        test_mask = torch.zeros(n_nodes, dtype=torch.bool)
+        
+        train_mask[train_idx] = True
+        val_mask[val_idx] = True
+        test_mask[test_idx] = True
+
+        self.graph.ndata["train_mask"] = train_mask
+        self.graph.ndata["val_mask"] = val_mask
+        self.graph.ndata["test_mask"] = test_mask
+
+        # Store indices for direct access
+        self.train_idx = train_idx
+        self.val_idx = val_idx
+        self.test_idx = test_idx
+
+    def __getitem__(self, i):
+        return self.graph
+
+    def __len__(self):
+        return 1
+
+# Example usage:
+# Assuming X_embed is a numpy array or similar with shape (cells, genes)
+# labels is a numpy array with shape (cells,)
+# start_nodes and end_nodes are numpy arrays representing edges
+# weights is a numpy array representing edge weights
+
+# dataset = GeneCellDataset(X_embed, labels, start_nodes, end_nodes, weights)
+# graph = dataset[0]
+
+# print(graph)
+# print("Train indices:", dataset.train_idx)
+# print("Validation indices:", dataset.val_idx)
+# print("Test indices:", dataset.test_idx)
+
+

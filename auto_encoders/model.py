@@ -10,8 +10,11 @@ from torch import nn, optim
 from torch.nn import functional as F
 
 from auto_encoders.gae.layers import GraphConvolution, GAT, GCN
-from torch_geometric.data import NeighborSampler
-from torch_geometric.nn import SAGEConv
+
+# from torch_geometric.data import NeighborSampler
+# from torch_geometric.nn import SAGEConv
+import dgl
+from dgl.nn import SAGEConv
 
 class Feature_AE(nn.Module):
     ''' 
@@ -115,7 +118,7 @@ class Graph_AE(nn.Module):
         x = self.gc4(x,adj)
         F.relu(torch.relu(x))
         return self.mu_layer(x), self.logvar_layer(x)
-    
+
     def encode_sage(self, x, adj):
         x = self.sage1(x, adj)
         x = F.relu(torch.relu(x))

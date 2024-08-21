@@ -36,6 +36,8 @@ def feature_AE_handler(X, TRS, args, param, model_state=None):
     X_loader = DataLoader(X_dataset, batch_size=batch_size, **param['dataloader_kwargs'])
     TRS = torch.from_numpy(TRS).type(torch.FloatTensor)
 
+    print(X_loader)
+
     feature_AE = model.Feature_AE(dim=X.shape[1]).to(param['device'])
     optimizer = optim.Adam(feature_AE.parameters(), lr=learning_rate)
 
@@ -60,6 +62,7 @@ def feature_AE_handler(X, TRS, args, param, model_state=None):
             feature_AE.load_state_dict(model_state['model'])
             # optimizer.load_state_dict(model_state['optimizer']) # Adam optimizer includes momentum, will turn this off for now
 
+    # The train loader has only batch as it is 2000 data points only, (124,2000)
     _, X_embed, X_recon = train.train_handler(
         model = feature_AE, 
         train_loader = X_loader, 
@@ -71,7 +74,7 @@ def feature_AE_handler(X, TRS, args, param, model_state=None):
         regu_strength = regu_strength,
         masked_prob = masked_prob,
         param = param)
-
+    
     checkpoint = {
         'model_concat': feature_AE.state_dict(),
         'optimizer_concat': optimizer.state_dict(),
